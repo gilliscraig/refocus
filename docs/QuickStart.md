@@ -1,3 +1,9 @@
+---
+layout: default
+title: Blogging Like a Hacker
+---
+
+
 # Refocus Quick Start Guide
 
 Refocus is a platform for visualizing the status of some set of subjects under monitoring. The platform does not attempt to provide visualizations to satisfy every type of user. Instead, it allows users to install add-on modules, which we call lenses, to provide new visualizations. Each lens provides a new visualization to help users understand their data in a new way.

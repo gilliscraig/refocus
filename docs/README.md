@@ -1,2 +1,10 @@
-#Here you can find documentation getting started with Refocus!
-- [QuickStart](QuickStart.md)
+# Files
+
+# Using Jekyll Locally
+
+Locally
+
+`bundle exec jekyll serve`
+
+# Help
+[Jeykll Docs](https://jekyllrb.com/docs/home/)

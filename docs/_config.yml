@@ -27,3 +27,7 @@ github_username:  jekyll
 # Build settings
 markdown: kramdown
 theme: minima
+
+sass:
+    sass_dir: node_modules/bootstrap/scss
+    style: compressed

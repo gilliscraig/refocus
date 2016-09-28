@@ -1,0 +1,11 @@
+{
+  "name": "docs",
+  "version": "1.0.0",
+  "description": "Docs for Refocus",
+  "main": "",
+  "author": "Salesforce Refocus Team",
+  "license": "ISC",
+  "dependencies": {
+    "bootstrap": "^4.0.0-alpha.4"
+  }
+}

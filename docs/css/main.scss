@@ -11,3 +11,13 @@ $icon-font-path: "/node_modules/bootstrap/fonts/bootstrap/";
 
 /* any style customization must be before the bootstrap import */
 @import "bootstrap";
+
+body {
+  padding-top: 20px;
+  padding-bottom: 20px;
+}
+
+.navbar {
+  margin-bottom: 20px;
+}
+

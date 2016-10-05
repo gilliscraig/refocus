@@ -82,7 +82,7 @@ Refocus requires that both Redis and PostgreSQL are running. After Refocus is de
 
 Think about how you want to structure your visualization based on the Refocus hierarchy. The relationship between subjects, aspects, and samples looks like this:
 
-![Subject Hierarchy](
+![Subject Hierarchy](./refocus_subject_hierarchy.png)
 
 As you work with Refocus, you’ll understand how these parts work together to best visualize your data.
 

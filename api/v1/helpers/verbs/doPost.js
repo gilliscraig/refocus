@@ -9,11 +9,10 @@
 /**
  * api/v1/helpers/verbs/doPost.js
  */
-'use strict';
+'use strict'; // eslint-disable-line strict
 
 const u = require('./utils');
-const httpStatus = require('../../constants').httpStatus;
-const logAPI = require('../../../../utils/loggingUtil').logAPI;
+const pu = require('./postUtils');
 
 /**
  * Creates a new record and sends it back in the json response with status
@@ -26,17 +25,11 @@ const logAPI = require('../../../../utils/loggingUtil').logAPI;
  *  resource type to post.
  */
 function doPost(req, res, next, props) {
-  const toPost = req.swagger.params.queryBody.value;
-  const assocToCreate = u.includeAssocToCreate(toPost, props);
-  props.model.create(toPost, assocToCreate)
-  .then((o) => {
-    if (props.loggingEnabled) {
-      logAPI(req, props.modelName, o);
-    }
-
-    return res.status(httpStatus.CREATED)
-    .json(u.responsify(o, props, req.method));
-  })
+  const resultObj = { reqStartTime: req.timestamp };
+  const params = req.swagger.params;
+  u.mergeDuplicateArrayElements(params.queryBody.value, props);
+  pu.makePostPromise(params, props, req)
+  .then((o) => pu.handlePostResult(o, resultObj, props, res, req))
   .catch((err) => u.handleError(next, err, props.modelName));
 }
 

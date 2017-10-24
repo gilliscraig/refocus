@@ -9,11 +9,9 @@
 /**
  * api/v1/helpers/verbs/doPut.js
  */
-'use strict';
+'use strict'; // eslint-disable-line strict
 
 const u = require('./utils');
-const httpStatus = require('../../constants').httpStatus;
-const logAPI = require('../../../../utils/loggingUtil').logAPI;
 
 /**
  * Updates a record and sends the udpated record back in the json response
@@ -29,38 +27,16 @@ const logAPI = require('../../../../utils/loggingUtil').logAPI;
  *  resource type to put.
  */
 function doPut(req, res, next, props) {
+  const resultObj = { reqStartTime: req.timestamp };
   const toPut = req.swagger.params.queryBody.value;
   const puttableFields =
     req.swagger.params.queryBody.schema.schema.properties;
+
+  // find the instance, then update it
   u.findByKey(props, req.swagger.params)
-  .then((o) => {
-    const keys = Object.keys(puttableFields);
-    for (let i = 0; i < keys.length; i++) {
-      const key = keys[i];
-      if (toPut[key] === undefined) {
-        let nullish = null;
-        if (puttableFields[key].type === 'boolean') {
-          nullish = false;
-        } else if (puttableFields[key].enum) {
-          nullish = puttableFields[key].default;
-        }
-
-        o.set(key, nullish);
-      } else {
-        o.set(key, toPut[key]);
-      }
-    }
-
-    return o.save();
-  })
-  .then((o) => u.handleAssociations(toPut, o, props, req.method))
-  .then((o) => {
-    if (props.loggingEnabled) {
-      logAPI(req, props.modelName, o);
-    }
-
-    return res.status(httpStatus.OK).json(u.responsify(o, props, req.method));
-  })
+  .then((o) => u.isWritable(req, o))
+  .then((o) => u.updateInstance(o, puttableFields, toPut))
+  .then((retVal) => u.handleUpdatePromise(resultObj, req, retVal, props, res))
   .catch((err) => u.handleError(next, err, props.modelName));
 }
 

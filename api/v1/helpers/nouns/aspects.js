@@ -15,10 +15,9 @@ const Aspect = require('../../../../db/index').Aspect;
 
 const m = 'aspect';
 
-// list related associations and convert it to a set
-const assocList = ['tags'];
-const assocSet = new Set(assocList);
 const fieldsWithJsonArrayType = ['relatedLinks'];
+const fieldsWithArrayType = ['tags'];
+const fieldsWithEnum = ['valueType'];
 
 module.exports = {
   apiLinks: {
@@ -34,6 +33,15 @@ module.exports = {
   },
   model: Aspect,
   modelName: 'Aspect',
-  assocSet,
+
+  // define the associations that are to be deleted here
+  belongsToManyAssoc: {
+    users: 'writers',
+  },
+  fieldsWithArrayType,
   fieldsWithJsonArrayType,
+  fieldsWithEnum,
+  tagFilterName: 'tags',
+  readOnlyFields: ['id', 'isDeleted'],
+  requireAtLeastOneFields: ['helpEmail', 'helpUrl'],
 }; // exports

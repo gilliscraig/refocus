@@ -10,7 +10,6 @@
  * tests/db/helpers/common.js
  */
 'use strict';
-
 const expect = require('chai').expect;
 const tu = require('../../testUtils');
 const u = require('../model/subject/utils');
@@ -19,9 +18,38 @@ const Aspect = tu.db.Aspect;
 const Sample = tu.db.Sample;
 const common = require('../../../db/helpers/common');
 
-describe('utility function tests:', () => {
+describe('tests/db/helpers/common.js >', () => {
   after(u.forceDelete);
-  describe('publishChange function:', () => {
+
+  describe('checkDuplicatesInStringArray >', () => {
+    it('empty input returns false', () => {
+      expect(common.checkDuplicatesInStringArray()).to.be.false;
+    });
+
+    it('empty array input returns false', () => {
+      expect(common.checkDuplicatesInStringArray([])).to.be.false;
+    });
+
+    it('all identical elements returns true', () => {
+      expect(common.checkDuplicatesInStringArray(['a', 'a', 'a'])).to.be.true;
+    });
+
+    it('no duplicates return false', () => {
+      expect(common.checkDuplicatesInStringArray(['a', 'b', 'c'])).to.be.false;
+    });
+
+    it('multiple duplicates return true', () => {
+      const uniqueArray = ['a', 'b', 'c'];
+      const dupesArr = [];
+      dupesArr.push(...uniqueArray);
+      dupesArr.push(...uniqueArray);
+      dupesArr.push(...uniqueArray);
+      expect(dupesArr.length).to.equal(9);
+      expect(common.checkDuplicatesInStringArray(dupesArr)).to.be.true;
+    });
+  });
+
+  describe('publishChange function >', () => {
     it('create a model', (done) => {
       const par = { name: `${tu.namePrefix}Alpha`, isPublished: true };
       Subject.create(par)
@@ -30,29 +58,25 @@ describe('utility function tests:', () => {
         expect(obj).to.have.property('add');
         done();
       })
-      .catch((err) => done(err));
+      .catch(done);
     });
 
     it('destory with a model', (done) => {
       const par = { name: `${tu.namePrefix}Gamma`, isPublished: true };
       Subject.create(par)
-      .then((o) => {
-        return o.destroy();
-      })
+      .then((o) => o.destroy())
       .then((o) => {
         const obj = common.publishChange(o, 'delete');
         expect(obj).to.have.property('delete');
         done();
       })
-      .catch((err) => done(err));
+      .catch(done);
     });
 
     it('update a model instance', (done) => {
       const par = { name: `${tu.namePrefix}Kappa`, isPublished: false };
       Subject.create(par)
-      .then((o) => {
-        return o.update({ isPublished: true });
-      })
+      .then((o) => o.update({ isPublished: true }))
       .then((o) => {
         const changedKeys = Object.keys(o._changed);
         const ignoreAttributes = ['isDeleted'];
@@ -61,16 +85,14 @@ describe('utility function tests:', () => {
         expect(obj.update).to.have.property('new');
         done();
       })
-      .catch((err) => done(err));
+      .catch(done);
     });
 
     it('update a fields in a model that' +
         ' is a part of ignoreAttributes ', (done) => {
       const par = { name: `${tu.namePrefix}Delta`, isPublished: false };
       Subject.create(par)
-      .then((o) => {
-        return o.update({ isPublished: true });
-      })
+      .then((o) => o.update({ isPublished: true }))
       .then((o) => {
         const changedKeys = Object.keys(o._changed);
         const ignoreAttributes = changedKeys;
@@ -79,16 +101,14 @@ describe('utility function tests:', () => {
         expect(obj.update).to.equal(null);
         done();
       })
-      .catch((err) => done(err));
+      .catch(done);
     });
 
-    it('update a model instance field with the same filed'+
+    it('update a model instance field with the same field ' +
       'in ignoreAttributes', (done) => {
       const par = { name: `${tu.namePrefix}Eta`, isPublished: false };
       Subject.create(par)
-      .then((o) => {
-        return o.update({ isPublished: true });
-      })
+      .then((o) => o.update({ isPublished: true }))
       .then((o) => {
         const changedKeys = Object.keys(o._changed);
         const ignoreAttributes = changedKeys;
@@ -97,10 +117,11 @@ describe('utility function tests:', () => {
         expect(obj.update).to.equal(null);
         done();
       })
-      .catch((err) => done(err));
+      .catch(done);
     });
   });
-  describe('sampleAspectAndSubjectArePublished function:', () => {
+  describe('test sampleAspectAndSubjectArePublished and ' +
+  'augmentSampleWithSubjectAspectInfo function >', () => {
     let sub;
     before((done) => {
       Aspect.create({
@@ -117,39 +138,39 @@ describe('utility function tests:', () => {
         sub = s;
         done();
       })
-      .catch((err) => done(err));
+      .catch(done);
     });
 
-    it('create sample; check for true', (done) => {
+    it('sampleAspectAndSubjectArePublished : check for true', (done) => {
       Sample.upsertByName({
         name: `${tu.namePrefix}Subject|${tu.namePrefix}Aspect`,
         value: '1',
       })
-      .then((samp) => {
-        return common.sampleAspectAndSubjectArePublished(tu.db.sequelize, samp);
-      })
+      .then((samp) =>
+        common.sampleAspectAndSubjectArePublished(tu.db.sequelize, samp))
       .then((pub) => {
         expect(pub).to.equal(true);
       })
       .then(() => done())
-      .catch((err) => done(err));
+      .catch(done);
     });
 
-    it('create sample; check for false', (done) => {
-      Subject.findById(sub.id)
-      .then((s) => s.update({ isPublished: false }))
-      .then(() => Sample.upsertByName({
+    it('augmentSampleWithSubjectAspectInfo : returned sample should have' +
+        ' subject and aspect information', (done) => {
+      Sample.upsertByName({
         name: `${tu.namePrefix}Subject|${tu.namePrefix}Aspect`,
         value: '1',
-      }))
-      .then((samp) => {
-        return common.sampleAspectAndSubjectArePublished(tu.db.sequelize, samp);
       })
-      .then((pub) => {
-        expect(pub).to.equal(false);
+      .then((samp) =>
+        common.augmentSampleWithSubjectAspectInfo(tu.db.sequelize, samp))
+      .then((sam) => {
+        expect(sam.subject.name).to.equal(`${tu.namePrefix}Subject`);
+        expect(sam.aspect.name).to.equal(`${tu.namePrefix}Aspect`);
+        expect(sam.subject.tags).to.be.instanceof(Array);
+        expect(sam.aspect.tags).to.to.be.instanceof(Array);
       })
       .then(() => done())
-      .catch((err) => done(err));
+      .catch(done);
     });
   });
 });

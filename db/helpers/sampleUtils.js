@@ -13,7 +13,7 @@
  */
 'use strict'; // eslint-disable-line strict
 const constants = require('../constants');
-const ResourceNotFoundError = require('../dbErrors').ResourceNotFoundError;
+const dbErrors = require('../dbErrors');
 const fourByteBase = 2;
 const fourByteExponent = 31;
 const fourByteLimit = Math.pow(fourByteBase, fourByteExponent);
@@ -160,7 +160,7 @@ function parseName(name) {
     return retval;
   }
 
-  const err = new ResourceNotFoundError();
+  const err = new dbErrors.ResourceNotFoundError();
   err.resourceType = 'Sample';
   err.resourceKey = name;
   throw err;
@@ -174,46 +174,56 @@ function parseName(name) {
  * @param {String} sampleName - The sample name, which is a concatenation of
  *  the subject absolute path, constants.sampleNameSeparator and the aspect
  *  name
+ * @param {Boolean} idsOnly - indicate whether to return the default scoped
+ *  attributes for subject and aspect or just the id
  * @returns {Promise} which resolves to an object containing the sample and
  *  aspect, or rejects if either sample or aspect is not found
  * @throws {ResourceNotFoundError} if the sampleName cannot be split into its
  *  subject/aspect parts or if either the subject absolute path or aspect name
  *  cannot be found
  */
-function getSubjectAndAspectBySampleName(seq, sampleName) {
+function getSubjectAndAspectBySampleName(seq, sampleName, idsOnly) {
   try {
     const parsedName = parseName(sampleName);
+    const subjectFinder = {
+      where: {
+        absolutePath: {
+          $iLike: parsedName.subject.absolutePath,
+        },
+      },
+    };
+    const aspectFinder = {
+      where: {
+        name: {
+          $iLike: parsedName.aspect.name,
+        },
+      },
+    };
+
+    if (idsOnly) {
+      subjectFinder.attributes = ['id'];
+      aspectFinder.attributes = ['id'];
+    }
+
     const retval = {};
     return new seq.Promise((resolve, reject) =>
-      seq.models.Subject.findOne({
-        where: {
-          absolutePath: {
-            $iLike: parsedName.subject.absolutePath,
-          },
-        },
-      })
+      seq.models.Subject.findOne(subjectFinder)
       .then((s) => {
         if (s) {
           retval.subject = s;
         } else {
-          const err = new ResourceNotFoundError();
+          const err = new dbErrors.ResourceNotFoundError();
           err.resourceType = 'Subject';
           err.resourceKey = parsedName.subject.absolutePath;
           throw err;
         }
       })
-      .then(() => seq.models.Aspect.findOne({
-        where: {
-          name: {
-            $iLike: parsedName.aspect.name,
-          },
-        },
-      }))
+      .then(() => seq.models.Aspect.findOne(aspectFinder))
       .then((a) => {
         if (a) {
           retval.aspect = a;
         } else {
-          const err = new ResourceNotFoundError();
+          const err = new dbErrors.ResourceNotFoundError();
           err.resourceType = 'Aspect';
           err.resourceKey = parsedName.aspect.name;
           throw err;
@@ -227,7 +237,12 @@ function getSubjectAndAspectBySampleName(seq, sampleName) {
   }
 } // getSubjectAndAspectBySampleName
 
+/**
+ * @param {String} now ISO formatted date.
+ * @return {Boolean} whether the sample timed out
+ */
 function isTimedOut(timeout, now, updatedAt) {
+  const dateNow = new Date(now);
   const unit = timeout.slice(-1)  // eslint-disable-line no-magic-numbers
                .toLowerCase();
   const num = timeout.substring(0, timeout.length - 1);
@@ -248,8 +263,8 @@ function isTimedOut(timeout, now, updatedAt) {
     default:
       secs = num;
   }
-  const nowSecs = Math.round(now.getTime() / MILLISECS_PER_SEC);
-  const updatedAtSecs = Math.round(updatedAt.getTime() / MILLISECS_PER_SEC);
+  const nowSecs = Math.round(dateNow.getTime() / MILLISECS_PER_SEC);
+  const updatedAtSecs = Math.round(new Date(updatedAt).getTime() / MILLISECS_PER_SEC);
   if (secs < (nowSecs - updatedAtSecs)) {
     return true;
   }

@@ -10,15 +10,22 @@
  * api/v1/controllers/lenses.js
  */
 'use strict'; // eslint-disable-line strict
-
+const featureToggles = require('feature-toggles');
 const helper = require('../helpers/nouns/lenses');
+const authUtils = require('../helpers/authUtils');
+const userProps = require('../helpers/nouns/users');
 const doDelete = require('../helpers/verbs/doDelete');
+const doDeleteAllAssoc = require('../helpers/verbs/doDeleteAllBToMAssoc');
+const doDeleteOneAssoc = require('../helpers/verbs/doDeleteOneBToMAssoc');
+const doPostWriters = require('../helpers/verbs/doPostWriters');
 const doFind = require('../helpers/verbs/doFind');
+const doGetWriters = require('../helpers/verbs/doGetWriters');
 const u = require('../helpers/verbs/utils');
 const httpStatus = require('../constants').httpStatus;
 const apiErrors = require('../apiErrors');
 const AdmZip = require('adm-zip');
-
+const redisCache = require('../../../cache/redisCache').client.cache;
+const lensUtil = require('../../../utils/lensUtil');
 const ZERO = 0;
 const ONE = 1;
 
@@ -32,7 +39,9 @@ function updateLensDetails(seqObj) {
     if (seqObj.hasOwnProperty('sourceName')) {
       seqObj.name = seqObj.sourceName;
     } else {
-      throw new apiErrors.ValidationError();
+      throw new apiErrors.ValidationError({
+        explanation: 'name is required in lens json.',
+      });
     }
   }
 
@@ -52,14 +61,32 @@ function updateLensDetails(seqObj) {
 }
 
 /**
- * Parse lens metadata from lens json provided in lens zip
+ * Parse lens metadata from lens json provided in lens zip. Set sourceName,
+ * sourceDescription and sourceVersion from lens json name, description and
+ * version. Throw error is name not provided in lens json.
  * @param  {object} zip - lens zip
  * @param  {object} lensJson - lens metadata in json format
  * @param  {object} seqObj - lens object to create
  */
 function parseLensMetadata(zip, lensJson, seqObj) {
   const metadataJson = JSON.parse(zip.readAsText(lensJson));
+  if (!metadataJson.name) {
+    throw new apiErrors.ValidationError({
+      explanation: 'name is required in lens json.',
+    });
+  }
+
   for (const metadataEntry in metadataJson) {
+    // validate lens name
+    if (metadataEntry === 'name' &&
+     (/^[0-9A-Za-z_\\-]{0,60}$/).test(metadataJson[metadataEntry]) === false) {
+      throw new apiErrors.ValidationError({
+        explanation: 'Name field should be max 60 characters; case ' +
+        'insensitive; allows alpha-numeric characters,underscore (_) ' +
+        'and dash (-).',
+      });
+    }
+
     // lens metadata name will be saved as sourceName.
     //  Same with description and version
     if (metadataEntry === 'name' || metadataEntry === 'description' ||
@@ -102,71 +129,15 @@ function handleLensMetadata(requestObj, libraryParam, seqObj) {
     if (lensJsonFound && lensJsFound) {
       parseLensMetadata(zip, lensJson, seqObj);
     } else {
-      throw new apiErrors.ValidationError();
+      throw new apiErrors.ValidationError({
+        explanation: 'lens.js and lens.json are required files in lens zip.',
+      });
     }
   } else {
-    throw new apiErrors.ValidationError();
+    throw new apiErrors.ValidationError({
+      explanation: 'The library parameter mime type should be application/zip',
+    });
   }
-}
-
-/**
- * Create Json for files in Lens library with format, filename: file contents.
- * @param  {Object} lensObject - lens object
- * @returns {Object} zipContents - Json prepared from library contents.
- */
-function createLensLibraryJson(lensObject) {
-  const re = /(?:\.([^.]+))?$/;
-  const zip = AdmZip(lensObject.library);
-  const zipEntries = zip.getEntries();
-
-  const zipContents = {};
-  for (let j = 0; j < zipEntries.length; j++) {
-    let ext = re.exec(zipEntries[j].entryName)[ONE] || '';
-    ext = ext.toLowerCase();
-
-    // handle different file types here
-    if (ext === 'png' || ext === 'jpg' || ext === 'jpeg') {
-      const b64str = zipEntries[j].getData().toString('base64');
-      zipContents[zipEntries[j].entryName] = b64str;
-    } else {
-      zipContents[zipEntries[j].entryName] = zip.readAsText(
-        zipEntries[j]
-      );
-    }
-  }
-
-  return zipContents;
-}
-
-/**
- * Recursively cleans the object (i.e. calls "get" on any sequelize
- * instances), strips out nulls (because swagger validation doesn't like
- * nulls).
- *
- * @param {Object} obj - The object to clean
- * @returns {Object} - The cleaned object
- */
-function cleanAndCreateLensJson(obj) {
-  const o = obj.get ? obj.get({ plain: true }) : obj;
-  if (o) {
-    const keys = Object.keys(o);
-    for (let i = 0; i < keys.length; i++) {
-      const key = keys[i];
-
-      if (key === 'library' && o[key]) {
-        const lensLibraryJson = createLensLibraryJson(o);
-        o[key] = lensLibraryJson;
-      } else if (o[key] === undefined || o[key] === null) {
-        delete o[key];
-      } else if (Array.isArray(o[key])) {
-        o[key] = o[key].map((j) => cleanAndCreateLensJson(j));
-      } else if (typeof o[key] === 'object') {
-        o[key] = cleanAndCreateLensJson(o[key]);
-      }
-    }
-  }
-
-  return o;
 }
 
 /**
@@ -182,7 +153,7 @@ function cleanAndCreateLensJson(obj) {
  *  the response
  */
 function responsify(rec, props, method) {
-  const o = cleanAndCreateLensJson(rec);
+  const o = lensUtil.cleanAndCreateLensJson(rec);
   o.apiLinks = u.getApiLinks(o.id, props, method);
   return o;
 }
@@ -203,6 +174,34 @@ module.exports = {
   },
 
   /**
+   * DELETE /lenses/{keys}/writers
+   *
+   * Deletes all the writers associated with this resource.
+   *
+   * @param {IncomingMessage} req - The request object
+   * @param {ServerResponse} res - The response object
+   * @param {Function} next - The next middleware function in the stack
+   */
+  deleteLensWriters(req, res, next) {
+    doDeleteAllAssoc(req, res, next, helper, helper.belongsToManyAssoc.users);
+  },
+
+  /**
+   * DELETE /lenses/{keys}/writers/userNameOrId
+   *
+   * Deletes a user from an lens’ list of authorized writers.
+   *
+   * @param {IncomingMessage} req - The request object
+   * @param {ServerResponse} res - The response object
+   * @param {Function} next - The next middleware function in the stack
+   */
+  deleteLensWriter(req, res, next) {
+    const userNameOrId = req.swagger.params.userNameOrId.value;
+    doDeleteOneAssoc(req, res, next, helper,
+        helper.belongsToManyAssoc.users, userNameOrId);
+  },
+
+  /**
    * GET /lenses
    *
    * Finds zero or more lenses and sends them back in the response.
@@ -216,6 +215,46 @@ module.exports = {
   },
 
   /**
+   * GET /lenses/{key}/writers
+   *
+   * Retrieves all the writers associated with the lens
+   *
+   * @param {IncomingMessage} req - The request object
+   * @param {ServerResponse} res - The response object
+   * @param {Function} next - The next middleware function in the stack
+   */
+  getLensWriters(req, res, next) {
+    doGetWriters.getWriters(req, res, next, helper);
+  }, // getLensWriters
+
+  /**
+   * GET /lenses/{key}/writers/userNameOrId
+   *
+   * Determine whether a user is an authorized writer for a lens and returns
+   * the user record if so.
+   *
+   * @param {IncomingMessage} req - The request object
+   * @param {ServerResponse} res - The response object
+   * @param {Function} next - The next middleware function in the stack
+   */
+  getLensWriter(req, res, next) {
+    doGetWriters.getWriter(req, res, next, helper);
+  }, // getLensWriter
+
+  /**
+   * POST /lenses/{key}/writers
+   *
+   * Add one or more users to a lens’ list of authorized writers
+   *
+   * @param {IncomingMessage} req - The request object
+   * @param {ServerResponse} res - The response object
+   * @param {Function} next - The next middleware function in the stack
+   */
+  postLensWriters(req, res, next) {
+    doPostWriters(req, res, next, helper);
+  }, // postLensWriters
+
+  /**
    * GET /lenses/{key}
    *
    * Retrieves the lens and sends it back in the response.
@@ -225,17 +264,51 @@ module.exports = {
    * @param {Function} next - The next middleware function in the stack
    */
   getLens(req, res, next) {
-    u.findByKey(helper, req.swagger.params, ['lensLibrary'])
-    .then((o) => {
-      if (o.isPublished === false) {
-        throw new apiErrors.ResourceNotFoundError({
-          explanation: 'Lens is not published. Please contact Refocus admin.',
-        });
-      }
+    const resultObj = { reqStartTime: req.timestamp };
 
-      res.status(httpStatus.OK).json(responsify(o, helper, req.method));
-    })
-    .catch((err) => u.handleError(next, err, helper.modelName));
+    // try to get cached entry
+    redisCache.get(req.swagger.params.key.value, (cacheErr, reply) => {
+      if (reply) {
+        // reply is responsified lens object as string.
+        const lensObject = JSON.parse(reply);
+
+        // add api links to the object and return response.
+        lensObject.apiLinks = u.getApiLinks(
+          lensObject.id, helper, req.method
+        );
+
+        res.status(httpStatus.OK)
+        .json(lensObject);
+      } else {
+        // if cache error, print error and continue to get lens from db.
+        if (cacheErr) {
+          console.log(cacheErr); // eslint-disable-line no-console
+        }
+
+        // no reply, go to db to get lens object.
+        u.findByKey(helper, req.swagger.params, ['lensLibrary'])
+        .then((o) => {
+          resultObj.dbTime = new Date() - resultObj.reqStartTime;
+          if (o.isPublished === false) {
+            const eStr = 'Lens is not published. Please contact Refocus admin.';
+            throw new apiErrors.ResourceNotFoundError({
+              explanation: eStr,
+            });
+          }
+
+          return responsify(o, helper, req.method);
+        })
+        .then((responseObj) => {
+          u.logAPI(req, resultObj, responseObj);
+          res.status(httpStatus.OK).json(responseObj);
+
+          // cache the lens by id and name.
+          redisCache.set(responseObj.id, JSON.stringify(responseObj));
+          redisCache.set(responseObj.name, JSON.stringify(responseObj));
+        })
+        .catch((err) => u.handleError(next, err, helper.modelName));
+      }
+    });
   },
 
   /**
@@ -249,8 +322,10 @@ module.exports = {
    * @param {Function} next - The next middleware function in the stack
    */
   patchLens(req, res, next) {
+    const resultObj = { reqStartTime: req.timestamp };
     const requestBody = req.swagger.params.queryBody.value;
     u.findByKey(helper, req.swagger.params)
+    .then((o) => u.isWritable(req, o))
     .then((o) => {
       if (requestBody.name === '') {
         if (o.sourceName) {
@@ -273,8 +348,11 @@ module.exports = {
       return o.update(requestBody);
     })
     .then((o) => u.handleAssociations(requestBody, o, helper, req.method))
-    .then((retVal) =>
-      res.status(httpStatus.OK).json(u.responsify(retVal, helper, req.method)))
+    .then((retVal) => {
+      resultObj.dbTime = new Date() - resultObj.reqStartTime;
+      u.logAPI(req, resultObj, retVal);
+      res.status(httpStatus.OK).json(u.responsify(retVal, helper, req.method));
+    })
     .catch((err) => u.handleError(next, err, helper.modelName));
   },
 
@@ -288,6 +366,7 @@ module.exports = {
    * @param {Function} next - The next middleware function in the stack
    */
   postLens(req, res, next) {
+    const resultObj = { reqStartTime: req.timestamp };
     const reqObj = req.swagger.params;
     const seqObj = {};
     try {
@@ -305,18 +384,54 @@ module.exports = {
 
       updateLensDetails(seqObj);
       const assocToCreate = u.includeAssocToCreate(seqObj, helper);
-      helper.model.create(seqObj, assocToCreate)
-      .then((o) => {
-        delete o.dataValues.library;
-        res.status(httpStatus.CREATED).json(
-          u.responsify(o, helper, req.method)
-        );
-      })
-      .catch((err) => {
-        u.handleError(next, err, helper.modelName);
-      });
+
+      /**
+       * Creates the lens using the model.
+       * If returnUser flag is set,
+       * reloads the lens instance to return associations.
+       *
+       * @returns {Promise} The promise to create the lens.
+       */
+      const createLens = () => helper.model.create(seqObj, assocToCreate)
+        .then((o) => {
+          resultObj.dbTime = new Date() - resultObj.reqStartTime;
+          delete o.dataValues.library;
+          u.logAPI(req, resultObj, o.dataValues);
+          if (featureToggles.isFeatureEnabled('returnUser')) {
+            o.reload()
+            .then(() => res.status(httpStatus.CREATED).json(
+                u.responsify(o, helper, req.method)));
+          } else {
+            res.status(httpStatus.CREATED).json(
+              u.responsify(o, helper, req.method)
+            );
+          }
+        })
+        .catch((err) => {
+          u.handleError(next, err, helper.modelName);
+        });
+
+      if (featureToggles.isFeatureEnabled('returnUser')) {
+        authUtils.getUser(req)
+        .then((user) => {
+          if (user) {
+            seqObj.installedBy = user.id;
+          }
+
+          return createLens();
+        })
+        .catch((err) => {
+          if (err.status === httpStatus.FORBIDDEN) {
+            return createLens();
+          }
+
+          return u.handleError(next, err, helper.modelName);
+        });
+      } else {
+        createLens();
+      }
     } catch (err) {
-      err.info = 'Invalid library uploaded.';
+      err.description = 'Invalid library uploaded.';
       u.handleError(next, err, helper.modelName);
     }
   },
@@ -331,8 +446,10 @@ module.exports = {
    * @param {Function} next - The next middleware function in the stack
    */
   putLens(req, res, next) {
+    const resultObj = { reqStartTime: req.timestamp };
     const reqObj = req.swagger.params;
     u.findByKey(helper, req.swagger.params)
+    .then((o) => u.isWritable(req, o))
     .then((o) => {
       for (const param in reqObj) {
         if (reqObj[param].value === undefined) {
@@ -366,12 +483,13 @@ module.exports = {
       return o.save();
     })
     .then((o) => {
+      resultObj.dbTime = new Date() - resultObj.reqStartTime;
       delete o.dataValues.library;
+      u.logAPI(req, resultObj, o.dataValues);
       return res.status(httpStatus.OK).json(
         u.responsify(o, helper, req.method)
       );
     })
     .catch((err) => u.handleError(next, err, helper.modelName));
   },
-
 }; // exports

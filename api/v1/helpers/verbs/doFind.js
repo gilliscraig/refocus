@@ -9,12 +9,13 @@
 /**
  * api/v1/helpers/verbs/doFind.js
  */
-'use strict';
-
+'use strict'; // eslint-disable-line strict
 const u = require('./utils');
 const fu = require('./findUtils');
 const COUNT_HEADER_NAME = require('../../constants').COUNT_HEADER_NAME;
 const httpStatus = require('../../constants').httpStatus;
+const redisCache = require('../../../../cache/redisCache').client.cache;
+const config = require('../../../../config');
 
 /**
  * Finds all matching records but only returns a subset of the results for
@@ -32,9 +33,18 @@ const httpStatus = require('../../constants').httpStatus;
  *  find command
  */
 function doFindAndCountAll(reqResNext, props, opts) {
-  u.getScopedModel(props, opts.attributes).findAndCountAll(opts)
+  const resultObj = { reqStartTime: reqResNext.req.timestamp };
+
+  // enforce the default limit
+  if (!opts.limit || opts.limit > config.GET_REQUEST_DEFAULT_LIMIT) {
+    opts.limit = config.GET_REQUEST_DEFAULT_LIMIT;
+  }
+
+  return u.getScopedModel(props, opts.attributes).findAndCountAll(opts)
   .then((o) => {
+    resultObj.dbTime = new Date() - resultObj.reqStartTime;
     reqResNext.res.set(COUNT_HEADER_NAME, o.count);
+
     const retval = o.rows.map((row) => {
       if (props.modelName === 'Lens') {
         delete row.dataValues.library;
@@ -42,45 +52,56 @@ function doFindAndCountAll(reqResNext, props, opts) {
 
       return u.responsify(row, props, reqResNext.req.method);
     });
-    reqResNext.res.status(httpStatus.OK).json(retval);
+    u.logAPI(reqResNext.req, resultObj, retval);
+    return retval;
   })
   .catch((err) => u.handleError(reqResNext.next, err, props.modelName));
 } // doFindAndCountAll
 
 /**
- * Finds all matching records.
- *
- * NOTE : Sequelize is not able to generate the right postgres sql aggeragate
- * query for Subject and Aspect objects to count the samples associated with
- * them. So, these models are scoped before finding them and the length
- * of the associated sample array is used as the sample count.
+ * Finds all matching records. This function is just a wrapper around
+ * doFindAll or doFindAndCountAll, depending upon whether we need to paginate
+ * the results. If cacheKey is provided, we cache the response.
  *
  * @param {Object} reqResNext - The object containing the request object, the
  *  response object and the next middleware function in the stack
  * @param {Object} props - The helpers/nouns module for the given DB model
  * @param {Object} opts - The "options" object to pass into the Sequelize
- *  find command
+ * find command
  */
-function doFindAll(reqResNext, props, opts) {
-  u.getScopedModel(props, opts.attributes).findAll(opts)
-  .then((o) => {
-    reqResNext.res.set(COUNT_HEADER_NAME, o.length);
-    const retval = o.map((row) => {
-      if (props.modelName === 'Lens') {
-        delete row.dataValues.library;
-      }
-
-      return u.responsify(row, props, reqResNext.req.method);
+function doFindResponse(reqResNext, props, opts) {
+  if (opts.limit || opts.offset) {
+    reqResNext.res.links({
+      prev: reqResNext.req.originalUrl,
+      next: fu.getNextUrl(reqResNext.req.originalUrl, opts.limit, opts.offset),
     });
+  }
+
+  doFindAndCountAll(reqResNext, props, opts)
+  .then((retval) => {
+    u.sortArrayObjectsByField(props, retval);
+
+    // loop through remove values to delete property
+    if (props.fieldsToExclude) {
+      for (let i = retval.length - 1; i >= 0; i--) {
+        u.removeFieldsFromResponse(props.fieldsToExclude, retval[i]);
+      }
+    }
+
+    if (props.cacheKey) {
+      // cache the object by cacheKey.
+      const strObj = JSON.stringify(retval);
+      redisCache.setex(props.cacheKey, props.cacheExpiry, strObj);
+    }
+
     reqResNext.res.status(httpStatus.OK).json(retval);
   })
   .catch((err) => u.handleError(reqResNext.next, err, props.modelName));
-} // doFindAll
+}
 
 /**
- * Finds all matching records. This function is just a wrapper around
- * doFindAll or doFindAndCountAll, depending upon whether we need to paginate
- * the results.
+ * Finds all matching records. Get result from cache if present, else, get
+ * results from db and store in cache, if caching is enabled.
  *
  * @param {IncomingMessage} req - The request object
  * @param {ServerResponse} res - The response object
@@ -89,21 +110,20 @@ function doFindAll(reqResNext, props, opts) {
  */
 module.exports = function doFind(req, res, next, props) {
   const opts = fu.options(req.swagger.params, props);
-  if (opts.limit || opts.offset) {
-    res.links({
-      prev: req.originalUrl,
-      next: fu.getNextUrl(req.originalUrl, opts.limit, opts.offset),
-    });
-  }
 
-  /*
-   * If we're doing a "limit" query, we need to call findAndCountAll, but if
-   * we're not doing a "limit" query, just to findAll, avoiding the extra
-   * "SELECT count(*)... " database call.
-   */
-  if (opts.limit) {
-    doFindAndCountAll({ req, res, next }, props, opts);
+  // Check if Cache is on or not
+  if (props.cacheEnabled) {
+    redisCache.get(props.cacheKey, (cacheErr, reply) => {
+      if (cacheErr || !reply) {
+        // if err or no reply, get resuls from db and set redis cache
+        doFindResponse({ req, res, next }, props, opts);
+      } else {
+        // get from cache
+        const dbObj = JSON.parse(reply);
+        res.status(httpStatus.OK).json(dbObj);
+      }
+    });
   } else {
-    doFindAll({ req, res, next }, props, opts);
+    doFindResponse({ req, res, next }, props, opts);
   }
 }; // exports

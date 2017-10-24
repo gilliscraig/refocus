@@ -9,15 +9,27 @@
 /**
  * ./index.js
  *
- * Main module to start the express server.
+ * Main module to start the express server (web process). To just start the
+ * web process use "node index.js". To start both the web and the clock process
+ * use "heroku local"
  */
+
+/* eslint-disable global-require */
+/* eslint-disable no-process-env */
+
 const throng = require('throng');
-const WORKERS = process.env.WEB_CONCURRENCY || 1;
+const DEFAULT_WEB_CONCURRENCY = 1;
+const WORKERS = process.env.WEB_CONCURRENCY || DEFAULT_WEB_CONCURRENCY;
+const sampleStore = require('./cache/sampleStoreInit');
 
 /**
- * Entry point for each newly clustered process
+ * Entry point for each clustered process.
  */
 function start() { // eslint-disable-line max-statements
+  const SegfaultHandler = require('segfault-handler');
+  SegfaultHandler.registerHandler('crash.log');
+
+  const featureToggles = require('feature-toggles');
   const conf = require('./config');
   if (conf.newRelicKey) {
     require('newrelic');
@@ -35,34 +47,53 @@ function start() { // eslint-disable-line max-statements
   const env = conf.environment[conf.nodeEnv];
   const ENCODING = 'utf8';
   const compress = require('compression');
+  const cors = require('cors');
 
-  // set up sever side socket.io and redis publisher
+  // set up server side socket.io and redis publisher
   const express = require('express');
   const enforcesSSL = require('express-enforces-ssl');
 
   const app = express();
+
+  // redis client to for request limiter
+  const limiterRedisClient = require('./cache/redisCache').client.limiter;
+
+  // request limiter setting
+  const limiter = require('express-limiter')(app, limiterRedisClient);
+  limiter({
+    path: conf.endpointToLimit,
+    method: conf.httpMethodToLimit,
+    lookup: ['headers.x-forwarded-for'],
+    total: conf.rateLimit,
+    expire: conf.rateWindow,
+  });
+
+  /*
+   * Call this *before* the static pages and the API routes so that both the
+   * static pages *and* the API responses are compressed (gzip).
+   */
+  app.use(compress());
+
   const httpServer = require('http').Server(app);
   const io = require('socket.io')(httpServer);
   const socketIOSetup = require('./realtime/setupSocketIO');
-  socketIOSetup.setupNamespace(io);
-  const sub = require('./pubsub').sub;
-  require('./realtime/redisSubscriber')(io, sub);
 
   // modules for authentication
   const passportModule = require('passport');
   const cookieParser = require('cookie-parser');
   const session = require('express-session');
   const RedisStore = require('connect-redis')(session);
+  const rstore = new RedisStore({ url: conf.redis.instanceUrl.session });
+  socketIOSetup.init(io, rstore);
+  require('./realtime/redisSubscriber')(io);
 
   // pass passport for configuration
   require('./config/passportconfig')(passportModule);
 
   // middleware for checking api token
-  const jwtUtil = require('./api/v1/helpers/jwtUtil');
+  const jwtUtil = require('./utils/jwtUtil');
 
   // set up httpServer params
-  const dbSample = require('./db/index').Sample;
-  const CHECK_TIMEOUT_INTERVAL_MILLIS = 10000; // 10 seconds
   const listening = 'Listening on port';
   const isDevelopment = (process.env.NODE_ENV === 'development');
   const PORT = process.env.PORT || conf.port;
@@ -73,7 +104,7 @@ function start() { // eslint-disable-line max-statements
    * attempt to do a redirect 301 to https. Reject all other requests (DELETE,
    * PATCH, POST, PUT, etc.) with a 403.
    */
-  if (env.disableHttp) {
+  if (featureToggles.isFeatureEnabled('requireHttps')) {
     app.enable('trust proxy');
     app.use(enforcesSSL());
   }
@@ -95,13 +126,26 @@ function start() { // eslint-disable-line max-statements
 
     app.listen(PORT, () => {
       console.log(listening, PORT); // eslint-disable-line no-console
-      setInterval(() => dbSample.doTimeout(), CHECK_TIMEOUT_INTERVAL_MILLIS);
     });
   } else {
     httpServer.listen(PORT, () => {
       console.log(listening, PORT); // eslint-disable-line no-console
-      setInterval(() => dbSample.doTimeout(), CHECK_TIMEOUT_INTERVAL_MILLIS);
     });
+  }
+
+  /*
+   * Based on the change of state of the "enableSampleStore" feature flag
+   * populate the data into the cache or dump the data from the cache into the
+   * db
+   */
+  sampleStore.init();
+
+  /*
+   * If the clock dyno is NOT enabled, schedule all the scheduled jobs right
+   * from here.
+   */
+  if (!featureToggles.isFeatureEnabled('enableClockProcess')) {
+    require('./clock/index'); // eslint-disable-line global-require
   }
 
   // View engine setup
@@ -112,15 +156,31 @@ function start() { // eslint-disable-line max-statements
   const swaggerFile = fs // eslint-disable-line no-sync
     .readFileSync(conf.api.swagger.doc, ENCODING);
   const swaggerDoc = yaml.safeLoad(swaggerFile);
+
+  // Filter out hidden routes
+  if (!featureToggles.isFeatureEnabled('enableRooms')) {
+    for (let i = 0; i < conf.hiddenRoutes.length; i++) {
+      delete swaggerDoc.paths[conf.hiddenRoutes[i]];
+    }
+  }
+
   swaggerTools.initializeMiddleware(swaggerDoc, (mw) => {
+    app.use((req, res, next) => { // add timestamp to request
+      req.timestamp = Date.now();
+      next();
+    });
 
-    app.use(express.static(path.join(__dirname, 'public')));
-
-    // Compress(gzip) all the responses
-    app.use(compress());
+    app.use('/static', express.static(path.join(__dirname, 'public')));
 
     // Set the X-XSS-Protection HTTP header as a basic protection against XSS
     app.use(helmet.xssFilter());
+
+    /*
+     * Allow specified routes to be accessed from Javascript outside of Refocus
+     * through cross-origin resource sharing
+     * e.g. A bot that needs to get current botData from Refocus
+     */
+    conf.corsRoutes.forEach((rte) => app.use(rte, cors()));
 
     // Only let me be framed by people of the same origin
     app.use(helmet.frameguard());  // Same-origin by default
@@ -131,28 +191,28 @@ function start() { // eslint-disable-line max-statements
     // Keep browsers from sniffing mimetypes
     app.use(helmet.noSniff());
 
-    // Redirect '/' to '/v1'.
+    /*
+     * Redirect '/' to the application landing page, which right now is the
+     * default perspective (or the first perspective in alphabetical order if
+     * no perspective is defined as the default).
+     */
     app.get('/', (req, res) => res.redirect('/perspectives'));
 
-    // set json payload limit
-    app.use(bodyParser.json(
-      { limit: conf.payloadLimit }
-    ));
+    // Set the JSON payload limit.
+    app.use(bodyParser.json({ limit: conf.payloadLimit }));
 
     /*
-     * Interpret Swagger resources and attach metadata to request - must be first
-     * in swagger-tools middleware chain
+     * Interpret Swagger resources and attach metadata to request - must be
+     * first in swagger-tools middleware chain.
      */
     app.use(mw.swaggerMetadata());
 
     // Use token security in swagger api routes
-    if (env.useAccessToken === 'true' || env.useAccessToken === true) {
-      app.use(mw.swaggerSecurity({
-        jwt: (req, authOrSecDef, scopes, cb) => {
-          jwtUtil.verifyToken(req, cb);
-        },
-      }));
-    }
+    app.use(mw.swaggerSecurity({
+      jwt: (req, authOrSecDef, scopes, cb) => {
+        jwtUtil.verifyToken(req, cb);
+      },
+    }));
 
     // Validate Swagger requests
     app.use(mw.swaggerValidator(conf.api.swagger.validator));
@@ -166,8 +226,8 @@ function start() { // eslint-disable-line max-statements
 
     // Serve the Swagger documents and Swagger UI
     app.use(mw.swaggerUi({
-      apiDocs: swaggerDoc.basePath + '/api-docs', // for API documetation as JSON
-      swaggerUi: swaggerDoc.basePath + '/docs', // for API documentation as HTML
+      apiDocs: swaggerDoc.basePath + '/api-docs', // API documetation as JSON
+      swaggerUi: swaggerDoc.basePath + '/docs', // API documentation as HTML
     }));
 
     // Handle Errors
@@ -178,7 +238,7 @@ function start() { // eslint-disable-line max-statements
   app.use(cookieParser());
   app.use(bodyParser.urlencoded({ extended: true }));
   app.use(session({
-    store: new RedisStore({ url: env.redisUrl }),
+    store: rstore,
     secret: conf.api.sessionSecret,
     resave: false,
     saveUninitialized: false,
@@ -190,6 +250,7 @@ function start() { // eslint-disable-line max-statements
 
   // create app routes
   require('./view/loadView')(app, passportModule, '/v1');
+
   module.exports = { app, passportModule };
 }
 

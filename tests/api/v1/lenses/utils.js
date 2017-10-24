@@ -10,29 +10,37 @@
  * tests/api/v1/lenses/utils.js
  */
 'use strict'; // eslint-disable-line strict
-
 const tu = require('../../../testUtils');
 const path = require('path');
 const fs = require('fs');
 
 const testStartTime = new Date();
+const name = `${tu.namePrefix}testLensName`;
+const willSendthis = fs.readFileSync(
+  path.join(__dirname,
+    '../apiTestsUtils/lens.zip')
+);
+
+/**
+ * @param {Object} overWriteObject - to replace select key values.
+ * @returns {Object} - an input to Lens.create
+ */
+function getLens(overWriteObject) {
+  return Object.assign(overWriteObject || {}, { name,
+    sourceName: 'testSourceLensName',
+    description: 'test Description',
+    sourceDescription: 'test Source Description',
+    isPublished: true,
+    library: willSendthis,
+  });
+};
 
 module.exports = {
-  doSetup() {
+  name,
+  getLens,
+  doSetup(_lens) {
     return new tu.db.Sequelize.Promise((resolve, reject) => {
-      const willSendthis = fs.readFileSync(
-        path.join(__dirname,
-        '../apiTestsUtils/lens.zip')
-      );
-      const lens = {
-        name: `${tu.namePrefix}testLensName`,
-        sourceName: 'testSourceLensName',
-        description: 'test Description',
-        sourceDescription: 'test Source Description',
-        isPublished: true,
-        library: willSendthis,
-      };
-      tu.db.Lens.create(lens)
+      tu.db.Lens.create(_lens || getLens())
       .then((createdLens) => resolve(createdLens))
       .catch((err) => reject(err));
     });
@@ -42,6 +50,6 @@ module.exports = {
     tu.forceDelete(tu.db.Perspective, testStartTime)
     .then(() => tu.forceDelete(tu.db.Lens, testStartTime))
     .then(() => done())
-    .catch((err) => done(err));
+    .catch(done);
   },
 };

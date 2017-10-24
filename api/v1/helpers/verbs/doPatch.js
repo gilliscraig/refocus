@@ -9,11 +9,13 @@
 /**
  * api/v1/helpers/verbs/doPatch.js
  */
-'use strict';
+'use strict'; // eslint-disable-line strict
 
+const featureToggles = require('feature-toggles');
 const u = require('./utils');
-const httpStatus = require('../../constants').httpStatus;
-const logAPI = require('../../../../utils/loggingUtil').logAPI;
+const helper = require('../nouns/perspectives');
+const validateAtLeastOneFieldPresent =
+    require('../../../../utils/common').validateAtLeastOneFieldPresent;
 
 /**
  * Updates a record and sends the udpated record back in the json response
@@ -29,28 +31,53 @@ const logAPI = require('../../../../utils/loggingUtil').logAPI;
  *  resource type to patch.
  */
 function doPatch(req, res, next, props) {
+  const resultObj = { reqStartTime: req.timestamp };
   const requestBody = req.swagger.params.queryBody.value;
-  u.findByKey(props, req.swagger.params)
+  const patchPromise = u.findByKey(
+    props, req.swagger.params
+  )
+  .then((o) => u.isWritable(req, o))
   .then((o) => {
-    // To avoid timeouts when patching samples; force the update, even if
-    // the value has not changed. Adding this to the "before update hook" does
-    // give the needed effect; so adding it here!!!.
+    /*
+     * To avoid timeouts when patching samples; force the update, even if
+     * the value has not changed. Adding this to the "before update hook"
+     * does give the needed effect; so adding it here!!!.
+     */
     if (props.modelName === 'Sample') {
       o.changed('value', true);
+    } else if (props.modelName === 'Perspective') {
+      /*
+       * Clone the object so that we can copy the new request object values
+       * in memory and validate them, instead of updating the db object in
+       * memory (which will prevent updating the object in db).
+       */
+      const clonedObj = JSON.parse(JSON.stringify(o.get()));
+
+      // check the updated version of the perspective
+      helper.validateFilterAndThrowError(
+        Object.assign(clonedObj, requestBody)
+      );
+    }
+
+    if (featureToggles.isFeatureEnabled('requireHelpEmailOrHelpUrl') &&
+      props.requireAtLeastOneFields) {
+      try {
+        // check if at least one field present in db
+        validateAtLeastOneFieldPresent(o.get(), props.requireAtLeastOneFields);
+      } catch (err) {
+        // No field in db, check if at least one field present in request
+        validateAtLeastOneFieldPresent(req.body, props.requireAtLeastOneFields);
+      }
     }
 
     u.patchJsonArrayFields(o, requestBody, props);
-    return o.update(requestBody);
-  })
-  .then((o) => u.handleAssociations(requestBody, o, props, req.method))
-  .then((retVal) => {
-    if (props.loggingEnabled) {
-      logAPI(req, props.modelName, retVal);
-    }
+    u.patchArrayFields(o, requestBody, props);
 
-    return res.status(httpStatus.OK)
-    .json(u.responsify(retVal, props, req.method));
-  })
+    return o.update(requestBody);
+  });
+
+  patchPromise
+  .then((retVal) => u.handleUpdatePromise(resultObj, req, retVal, props, res))
   .catch((err) => u.handleError(next, err, props.modelName));
 }
 

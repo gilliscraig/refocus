@@ -10,7 +10,6 @@
  * tests/api/v1/subjects/deleteTags.js
  */
 'use strict';
-
 const supertest = require('supertest');
 const api = supertest(require('../../../../index').app);
 const constants = require('../../../../api/v1/constants');
@@ -21,17 +20,14 @@ const Subject = tu.db.Subject;
 const allDeletePath = '/v1/subjects/{key}/tags';
 const oneDeletePath = '/v1/subjects/{key}/tags/{akey}';
 
-describe(`api: subjects: DELETE tags}`, () => {
+describe('tests/api/v1/subjects/deleteTags.js >', () => {
   let token;
   let i;
-  let tag0;
+  const tag0 = 'tag0';
 
   const n = {
     name: `${tu.namePrefix}NorthAmerica`,
-    tags: [
-      { name: 'tag0', associatedModelName: 'Subject' },
-      { name: 'tag1', associatedModelName: 'Subject' },
-    ]
+    tags: ['tag0', 'tag1'],
   };
 
   before((done) => {
@@ -40,17 +36,16 @@ describe(`api: subjects: DELETE tags}`, () => {
       token = returnedToken;
       done();
     })
-    .catch((err) => done(err));
+    .catch(done);
   });
 
   beforeEach((done) => {
-    Subject.create(n, { include: Subject.getSubjectAssociations().tags })
+    Subject.create(n)
     .then((subj) => {
       i = subj.id;
-      tag0 = subj.tags[0].id;
       done();
     })
-    .catch((err) => done(err));
+    .catch(done);
   });
   afterEach(u.forceDelete);
   after(tu.forceDeleteUser);
@@ -62,13 +57,7 @@ describe(`api: subjects: DELETE tags}`, () => {
     .expect((res) => {
       expect(res.body.tags).to.have.length(0);
     })
-    .end((err /* , res */) => {
-      if (err) {
-        return done(err);
-      }
-
-      done();
-    });
+    .end(done);
   });
 
   it('delete one tag', (done) => {
@@ -77,16 +66,9 @@ describe(`api: subjects: DELETE tags}`, () => {
     .expect(constants.httpStatus.OK)
     .expect((res) => {
       expect(res.body.tags).to.have.length(1);
-      expect(res.body.tags).to.have.deep.property('[0].id');
-      expect(res.body.tags).to.have.deep.property('[0].name', 'tag1');
+      expect(res.body.tags).to.have.members(['tag1']);
     })
-    .end((err /* , res */) => {
-      if (err) {
-        return done(err);
-      }
-
-      done();
-    });
+    .end(done);
   });
 
   it('delete tag by name', (done) => {
@@ -95,28 +77,19 @@ describe(`api: subjects: DELETE tags}`, () => {
     .expect(constants.httpStatus.OK)
     .expect((res) => {
       expect(res.body.tags).to.have.length(1);
-      expect(res.body.tags).to.have.deep.property('[0].id');
-      expect(res.body.tags).to.have.deep.property('[0].name', 'tag1');
+      expect(res.body.tags).to.have.members(['tag1']);
     })
-    .end((err /* , res */) => {
-      if (err) {
-        return done(err);
-      }
-
-      done();
-    });
+    .end(done);
   });
 
-  it('error if tag not found', (done) => {
+  it('if tag not found; do not delete anything', (done) => {
     api.delete(oneDeletePath.replace('{key}', i).replace('{akey}', 'x'))
     .set('Authorization', token)
-    .expect(constants.httpStatus.NOT_FOUND)
-    .end((err /* , res */) => {
-      if (err) {
-        return done(err);
-      }
-
-      done();
-    });
+    .expect(constants.httpStatus.OK)
+    .expect((res) => {
+      expect(res.body.tags).to.have.length(2);
+      expect(res.body.tags).to.have.members(['tag1', 'tag0']);
+    })
+    .end(done);
   });
 });

@@ -19,24 +19,28 @@ const User = require('../db/index').User;
 const Profile = require('../db/index').Profile;
 const SamlStrategy = require('passport-saml').Strategy;
 const viewConfig = require('../viewConfig');
-const path = require('path');
-const jwtUtil = require('../api/v1/helpers/jwtUtil');
-const NOT_FOUND = 404;
+const jwtUtil = require('../utils/jwtUtil');
+const httpStatus = require('./constants').httpStatus;
+const url = require('url');
 
 // protected urls
 const viewmap = {
-  '/aspects': 'admin/index',
-  '/aspects/:key': 'admin/index',
-  '/aspects/:key/edit': 'admin/index',
-  '/subjects': 'admin/index',
-  '/subjects/:key': 'admin/index',
-  '/subjects/:key/edit': 'admin/index',
-  '/samples': 'admin/index',
-  '/samples/:key': 'admin/index',
-  '/samples/:key/edit': 'admin/index',
-  '/focusGrid': 'focusGrid/focus',
-  '/focusRtBracket': 'focusRtBracket/focus',
-  '/focusTree': 'focusTree/focus',
+  '/aspects': 'admin',
+  '/aspects/:key': 'admin',
+  '/aspects/:key/edit': 'admin',
+  '/subjects': 'admin',
+  '/subjects/:key': 'admin',
+  '/subjects/:key/edit': 'admin',
+  '/samples': 'admin',
+  '/samples/:key': 'admin',
+  '/samples/:key/edit': 'admin',
+  '/perspectives': 'perspective/perspective',
+  '/perspectives/:key': 'perspective/perspective',
+  '/tokens/new': 'tokens/new',
+  '/rooms': 'rooms/list',
+  '/rooms/types': 'rooms/types',
+  '/rooms/types/:key': 'rooms/type',
+  '/rooms/:key': 'rooms',
 };
 
 /**
@@ -79,7 +83,7 @@ function samlAuthentication(userProfile, done) {
       email: userProfile.email,
       profileId: profile.id,
       name: userProfile.email,
-      password: 'ssopassword',
+      password: viewConfig.dummySsoPassword,
       sso: true,
     })
   )
@@ -91,6 +95,24 @@ function samlAuthentication(userProfile, done) {
   });
 }
 
+/**
+ * Creates redirect url for sso.
+ * @param  {String} req Query string
+ * @returns {Object} Decode query params object
+ */
+function getRedirectUrlSSO(req) {
+  // req.headers.referer will be the original url requested
+  const query = url.parse(req.headers.referer, true).query;
+
+  // default to home page
+  let redirectUrl = '/';
+  if (query.ru) {
+    redirectUrl = query.ru;
+  }
+
+  return redirectUrl;
+}
+
 module.exports = function loadView(app, passport) {
   const keys = Object.keys(viewmap);
   keys.forEach((key) =>
@@ -98,35 +120,29 @@ module.exports = function loadView(app, passport) {
       key,
       ensureAuthenticated,
       (req, res) => {
-        // if request admin, serve html file. Otherwise render
-        res.render(viewmap[key], {
+        const trackObj = {
           trackingId: viewConfig.trackingId,
-          user: req.user,
-        });
+          user: JSON.stringify(req.user),
+          eventThrottle: viewConfig.realtimeEventThrottleMilliseconds,
+          transportProtocol: viewConfig.socketIOtransportProtocol,
+        };
+
+        const templateVars = Object.assign(
+          {},
+          { queryParams: JSON.stringify(req.query) },
+          trackObj
+        );
+
+        // if url contains a query, render perspective detail page with realtime
+        // updates
+        if ((key === '/perspectives' && Object.keys(req.query).length) ||
+        key === '/perspectives/:key') {
+          res.render(viewmap[key], templateVars);
+        } else {
+          res.render(viewmap[key], trackObj);
+        }
       }
     )
-  );
-
-  app.get(
-    '/perspectives',
-    ensureAuthenticated,
-    (req, res) => {
-      res.render('perspective/perspective', {
-        eventThrottle: viewConfig.realtimeEventThrottleMilliseconds,
-        trackingId: viewConfig.trackingId,
-      });
-    }
-  );
-
-  app.get(
-    '/perspectives/:key',
-    ensureAuthenticated,
-    (req, res) => {
-      res.render('perspective/perspective', {
-        eventThrottle: viewConfig.realtimeEventThrottleMilliseconds,
-        trackingId: viewConfig.trackingId,
-      });
-    }
   );
 
   /**
@@ -141,20 +157,25 @@ module.exports = function loadView(app, passport) {
       SSOConfig.findOne()
       .then((ssoconfig) => {
         if (ssoconfig) {
+          const redirectUrl = getRedirectUrlSSO(req);
+
+          // add relay state to remember redirect url when a response is
+          // returned from SAML IdP in post /sso/saml route
           passport.use(new SamlStrategy(
             {
               path: '/sso/saml',
               entryPoint: ssoconfig.samlEntryPoint,
               issuer: ssoconfig.samlIssuer,
+              additionalParams: { RelayState: redirectUrl },
             }, samlAuthentication)
           );
 
           return next();
         }
 
-        return res.status(NOT_FOUND).send('Page not found');
+        return res.status(httpStatus.NOT_FOUND).send('Page not found');
       })
-      .catch(() => res.status(NOT_FOUND).send('Page not found'));
+      .catch(() => res.status(httpStatus.NOT_FOUND).send('Page not found'));
     },
 
     passport.authenticate(
@@ -186,9 +207,9 @@ module.exports = function loadView(app, passport) {
           return next();
         }
 
-        return res.status(NOT_FOUND).send('Page not found');
+        return res.status(httpStatus.NOT_FOUND).send('Page not found');
       })
-      .catch(() => res.status(NOT_FOUND).send('Page not found'));
+      .catch(() => res.status(httpStatus.NOT_FOUND).send('Page not found'));
     },
 
     passport.authenticate('saml',
@@ -196,9 +217,18 @@ module.exports = function loadView(app, passport) {
         failureRedirect: '/login',
       }),
     (_req, _res) => {
-      const token = jwtUtil.createToken(_req.user);
-      _res.cookie('Authorization', token);
-      _res.redirect('/');
+      if (_req.user && _req.user.name) {
+        const token = jwtUtil.createToken(_req.user.name, _req.user.name);
+        _req.session.token = token;
+      }
+
+      if (_req.body.RelayState) {
+        // get the redirect url from relay state if present
+        _res.redirect(_req.body.RelayState);
+      } else {
+        // redirect to home page
+        _res.redirect('/');
+      }
     }
   );
 
@@ -238,12 +268,12 @@ module.exports = function loadView(app, passport) {
       SSOConfig.findOne()
       .then((ssoconfig) => {
         if (ssoconfig) {
-          return res.status(NOT_FOUND).send('Page not found');
+          return res.status(httpStatus.NOT_FOUND).send('Page not found');
         }
 
         return next();
       })
-      .catch(() => res.status(NOT_FOUND).send('Page not found'));
+      .catch(() => res.status(httpStatus.NOT_FOUND).send('Page not found'));
     },
 
     (req, res/* , next*/) => {

@@ -22,20 +22,22 @@ class ControlledInput extends React.Component {
     this.onChange = this.onChange.bind(this);
     this.state = {
       name: props.name,
-      value: props.value,
+      value: props.value || '',
     };
   }
 
   componentWillReceiveProps(nextProps) {
-    if (this.state.name !== nextProps.name) {
-      this.setState({ name: nextProps.name });
-    } else if (this.state.value !== nextProps.value) {
-      this.setState({ value: nextProps.value });
-    }
+    const { name, value } = nextProps;
+    this.setState({ name, value });
   }
 
   onChange(event) {
-    this.setState({ value: event.target.value });
+    const value = event.target.value;
+    const { onChange, name } = this.props;
+    this.setState({ value });
+    // if there's an onchange  handler in the props,
+    // pass the new value up
+    onChange && onChange({ name, value });
   }
 
   render() {
@@ -44,6 +46,7 @@ class ControlledInput extends React.Component {
         <input
         type='text'
         className='slds-input'
+        placeholder={this.props.placeholder}
         name={this.state.name}
         value={this.state.value}
         onChange={this.onChange}
@@ -56,6 +59,8 @@ class ControlledInput extends React.Component {
 ControlledInput.propTypes = {
   name: React.PropTypes.string.isRequired,
   value: React.PropTypes.string,
+  onChange: React.PropTypes.func,
+  placeholder: React.PropTypes.string,
 };
 
 export default ControlledInput;

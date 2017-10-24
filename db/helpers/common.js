@@ -11,14 +11,13 @@
  *
  * Common utility file used by all the models
  */
-
 'use strict'; // eslint-disable-line strict
 
-const pub = require('../../pubsub').pub;
+const pub = require('../../cache/redisCache').client.pubPerspective;
 const dbconf = require('../../config').db;
-const channelName = require('../../config').redis.channelName;
-const logDB = require('../../utils/loggingUtil').logDB;
-
+const channelName = require('../../config').redis.perspectiveChannelName;
+const joi = require('joi');
+const ValidationError = require('../dbErrors').ValidationError;
 
 // jsonSchema keys for relatedLink
 const jsonSchemaProperties = {
@@ -33,26 +32,53 @@ const changeType = {
 };
 
 /**
- * Takes a sample instance and enhances it with the subject instance
+ * Returns whether there are duplicates in a given flat array
+ *
+ * ie. [a, b, c, c, a] => true
+ * ie. [a, b, c] => false
+ *
+ * @param {Array} arr Array of strings
+ * @returns {Boolean} Does the input array contain duplicates
+ */
+function checkDuplicatesInStringArray(arr) {
+  if (!arr || !arr.length) {
+    return false;
+  }
+
+  // if all the elements are distinct set size === arr.length
+  const _set = new Set(arr);
+  return _set.size !== arr.length;
+}
+
+/**
+ * Takes a sample instance and enhances it with the subject instance and
+ * aspect instance
  * @param {Sequelize} seq - A reference to Sequelize to have access to the
  * the Promise class.
  * @param {Instance} inst - The Sample Instance.
  * @returns {Promise} - Returns a promise which resolves to sample instance
- * enhanced with subject instance information.
+ * enhanced with subject instance and aspect instance information.
  */
-function augmentSampleWithSubjectInfo(seq, inst) {
+function augmentSampleWithSubjectAspectInfo(seq, inst) {
   return new seq.Promise((resolve, reject) => {
     inst.getSubject()
     .then((sub) => {
       inst.dataValues.subject = sub;
+
       // adding absolutePath to sample instance
-      inst.dataValues.absolutePath = sub.absolutePath;
+      if (sub) {
+        inst.dataValues.absolutePath = sub.absolutePath;
+      }
+
       inst.subject = sub;
+    }).then(() => inst.getAspect())
+    .then((asp) => {
+      inst.dataValues.aspect = asp;
       resolve(inst);
     })
     .catch((err) => reject(err));
   });
-}
+} // augmentSampleWithSubjectAspectInfo
 
 /**
  * This function checks if the aspect and subject associated with the sample
@@ -67,11 +93,16 @@ function augmentSampleWithSubjectInfo(seq, inst) {
  */
 function sampleAspectAndSubjectArePublished(seq, inst) {
   return new seq.Promise((resolve, reject) => {
-    let asp, sub;
+    let asp;
+    let sub;
     inst.getSubject()
-    .then((s) => sub = s)
+    .then((s) => {
+      sub = s;
+    })
     .then(() => inst.getAspect())
-    .then((a) => asp = a)
+    .then((a) => {
+      asp = a;
+    })
     .then(() => resolve(sub && asp && sub.isPublished && asp.isPublished))
     .catch((err) => reject(err));
   });
@@ -120,7 +151,8 @@ function createDBLog(inst, eventType, changedKeys, ignoreAttributes) {
     }
   }
 
-  logDB(instance, eventType, changedVals);
+  // TODO: revisit this to fix logDB
+  // logDB(instance, eventType, changedVals);
 }
 
 /**
@@ -182,66 +214,6 @@ function publishChange(inst, event, changedKeys, ignoreAttributes) {
 } // publishChange
 
 /**
- * This function updates or creates the associated tags of an Instance
- *
- * @param  {[Object]} inst - An instance that has to have the associated
- *  tags updated or created
- * @param  {[Array]} tags - An array containing the tags to be
- *  updated or inserted
- * @returns {Promise} which resolves to an object containing the tags
- */
-function handleTags(inst, tags, method) {
-  const promises = tags.map((tag) =>
-    new Promise((resolve, reject) => {
-      inst.getTags({ where:
-          { name: tag.name, },
-      })
-      .then((o) => {
-        // since the combination of name and associationId is unique,
-        // this instance o, of tag will either be an array
-        // of size 0 or size 1.
-        const assocInst = o [0];
-        if (!assocInst) {
-          return inst.createTag(tag);
-        }
-
-        return assocInst;
-      })
-      .then((retVal) => resolve(retVal))
-      .catch((err) => reject(err));
-    })
-  );
-  if (/put/i.test(method)) {
-    return new Promise((resolve, reject) => {
-      let resolvedTags;
-      Promise.all(promises)
-      .then((retValue) => {
-        resolvedTags = retValue;
-        return inst.getTags();
-      })
-      .then((instTags) => {
-        instTags.forEach((tag) => {
-          let found = false;
-          resolvedTags.forEach((rTag) => {
-            if (rTag.id === tag.id) {
-              found = true;
-            }
-          });
-
-          if (!found) {
-            tag.destroy();
-          }
-        });
-      })
-      .then(() => resolve(resolvedTags))
-      .catch((err) => reject(err));
-    });
-  }
-
-  return Promise.all(promises);
-} // handleTags
-
-/**
  * The Json format of the relatedLink is validated against a pre-defined
  * schema. Validation to check the uniqueness of relatedLinks by name is
  * done
@@ -255,12 +227,13 @@ function validateJsonSchema(value) {
   for (let i = 0; i < value.length; i++) {
     const relLink = value[i];
     if (Object.keys(relLink).length > jsonSchemaProperties.relatedlink.length) {
-      throw new Error('A relatedlinks can only have'+
-        jsonSchemaProperties.relatedlink.length +' properties: ' +
+      throw new Error('A relatedlinks can only have' +
+        jsonSchemaProperties.relatedlink.length + ' properties: ' +
         jsonSchemaProperties.relatedlink);
     }
+
     if (relLinkNameSet.has(relLink.name)) {
-      throw new Error('Name of the relatedlinks should be unique');
+      throw new Error('Name of the relatedlinks should be unique.');
     } else {
       relLinkNameSet.add(relLink.name);
     }
@@ -282,14 +255,50 @@ function setIsDeleted(Promise, inst) {
     .catch((err) => reject(err)));
 } // setIsDeleted
 
+/**
+ * Validates a function against a schema. It throws an error if the object
+ * does not match the schema. The revalidator library is used for this purpose
+ * @param  {Object} object - The input object to be instered into the database
+ * @param  {Object} schema - The schema against which the object is to be
+ * validated
+ * @throws {ValidationError} If the object does not conform to the schema
+ */
+function validateObject(object, schema) {
+  const result = joi.validate(object, schema);
+  if (result.error) {
+    throw new ValidationError(result.error.message);
+  }
+} // validateObject
+
+/**
+ * A custom validator to validate the context definition object
+ * @param  {Object} contextDef - A context definition object
+ * @param {Array} requiredProps - Any array of the required field names
+ * @throws {ValidationError} If the object does not pass the validation.
+ */
+function validateContextDef(contextDef, requiredProps) {
+  const message = requiredProps.join(' and ');
+  const keys = Object.keys(contextDef);
+  for (let i = 0; i < keys.length; i++) {
+    const nestedKeys = new Set(Object.keys(contextDef[keys[i]]));
+    const intersection = new Set(requiredProps.filter((element) =>
+      nestedKeys.has(element)));
+    if (intersection.size !== requiredProps.length) {
+      throw new ValidationError(message + ' is required');
+    }
+  }
+} // validateContextDef
+
 module.exports = {
+  checkDuplicatesInStringArray,
   dbconf,
   setIsDeleted,
-  handleTags,
   publishChange,
   sampleAspectAndSubjectArePublished,
-  augmentSampleWithSubjectInfo,
+  augmentSampleWithSubjectAspectInfo,
   validateJsonSchema,
   createDBLog,
   changeType,
+  validateObject,
+  validateContextDef,
 }; // exports

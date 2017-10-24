@@ -12,8 +12,19 @@
 
 const common = require('../helpers/common');
 const constants = require('../constants');
-
+const redisCache = require('../../cache/redisCache').client.cache;
+const lensUtil = require('../../utils/lensUtil');
+const featureToggles = require('feature-toggles');
 const assoc = {};
+
+/**
+ * @param {Object} _inst - a sequelize Lens instance.
+ */
+function setLensObjectInCache(_inst) {
+  const lensObj = lensUtil.cleanAndCreateLensJson(_inst);
+  redisCache.set(lensObj.id, JSON.stringify(lensObj));
+  redisCache.set(lensObj.name, JSON.stringify(lensObj));
+}
 
 module.exports = function lens(seq, dataTypes) {
   const Lens = seq.define('Lens', {
@@ -78,9 +89,19 @@ module.exports = function lens(seq, dataTypes) {
         return assoc;
       },
 
+      getProfileAccessField() {
+        return 'lensAccess';
+      },
+
       postImport(models) {
-        assoc.installedBy = Lens.belongsTo(models.User, {
+        assoc.user = Lens.belongsTo(models.User, {
           foreignKey: 'installedBy',
+          as: 'user',
+        });
+        assoc.writers = Lens.belongsToMany(models.User, {
+          as: 'writers',
+          through: 'LensWriters',
+          foreignKey: 'lensId',
         });
 
         Lens.addScope('lensLibrary', {
@@ -89,22 +110,21 @@ module.exports = function lens(seq, dataTypes) {
           override: true,
         });
 
-        // Lens.addScope('defaultScope', {
-        //   include: [
-        //     {
-        //       model: models.User,
-        //       attributes: [ 'id', 'name' ],
-        //     }
-        //   ],
-        // }, {
-        //   override: true,
-        // });
+        Lens.addScope('defaultScope', {
+          include: [
+            {
+              association: assoc.user,
+              attributes: ['name', 'email'],
+            },
+          ],
+          attributes: { exclude: ['library'] },
+          order: ['Lens.name'],
+        }, {
+          override: true,
+        });
       },
     },
-    defaultScope: {
-      attributes: { exclude: ['library'] },
-      order: ['Lens.name'],
-    },
+
     hooks: {
       beforeDestroy(inst /* , opts */) {
         return common.setIsDeleted(seq.Promise, inst);
@@ -137,6 +157,33 @@ module.exports = function lens(seq, dataTypes) {
         }
       },
 
+      afterDestroy(inst /* , opts */) {
+        redisCache.del(inst.id);
+        redisCache.del(inst.name);
+      },
+
+      afterCreate(inst /* , opts */) {
+
+        // if installedBy is valid, reload to attach user object
+        if (inst.installedBy) {
+          const library = inst.library; // reload removes the library
+          inst.reload()
+          .then((reloadedInstance) => {
+            reloadedInstance.library = library;
+            setLensObjectInCache(reloadedInstance);
+          });
+        } else {
+          setLensObjectInCache(inst);
+        }
+      },
+
+      afterUpdate(inst /* , opts */) {
+        // the inst object here does not include library field because of
+        // default scope. So, we delete the cache entry on update so that
+        // fresh entry is populated on API layer when lens is fetched.
+        redisCache.del(inst.id);
+        redisCache.del(inst.name);
+      },
     },
     name: {
       singular: 'Lens',
@@ -152,6 +199,21 @@ module.exports = function lens(seq, dataTypes) {
         ],
       },
     ],
+    instanceMethods: {
+      isWritableBy(who) {
+        return new seq.Promise((resolve /* , reject */) =>
+          this.getWriters()
+          .then((writers) => {
+            if (!writers.length) {
+              resolve(true);
+            }
+
+            const found = writers.filter((w) =>
+              w.name === who || w.id === who);
+            resolve(found.length === 1);
+          }));
+      }, // isWritableBy
+    },
     paranoid: true,
     tableName: 'Lenses',
   });

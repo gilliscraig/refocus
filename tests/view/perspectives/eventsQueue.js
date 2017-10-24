@@ -10,13 +10,17 @@
  * tests/view/perspectives/eventsQueue.js
  */
 'use strict';
-
 const expect = require('chai').expect;
 const eventsQueue = require(
   '../../../view/perspective/eventsQueue'
 );
 
-describe('event queue', () => {
+describe('tests/view/perspectives/eventsQueue.js, event queue >', () => {
+  before((done) => {
+    eventsQueue.queue.splice(0, eventsQueue.queue.length);
+    done();
+  });
+
   after((done) => {
     eventsQueue.queue.splice(0, eventsQueue.queue.length);
     done();
@@ -38,8 +42,7 @@ describe('event queue', () => {
 
     // copy and flush queue in 1 sec
     setTimeout(() => {
-      eventsQueueCopy = eventsQueue.clone(eventsQueue.queue);
-      eventsQueue.queue.length = 0;
+      eventsQueueCopy = eventsQueue.queue.splice(0);
     }, 1000);
 
     // check result before 1 sec completion, queue not flushed
@@ -87,8 +90,7 @@ describe('event queue', () => {
 
     // copy and flush queue in 1 sec
     setTimeout(() => {
-      eventsQueueCopy = eventsQueue.clone(eventsQueue.queue);
-      eventsQueue.queue.length = 0;
+      eventsQueueCopy = eventsQueue.queue.splice(0);
     }, 1000);
 
     // check result before 1 sec completion, queue not flushed
@@ -128,8 +130,7 @@ describe('event queue', () => {
 
     // copy and flush queue in 1 sec
     setTimeout(() => {
-      eventsQueueCopy = eventsQueue.clone(eventsQueue.queue);
-      eventsQueue.queue.length = 0;
+      eventsQueueCopy = eventsQueue.queue.splice(0);
     }, 1000);
 
     // check result before 1 sec completion, queue not flushed

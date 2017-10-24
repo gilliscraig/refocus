@@ -10,7 +10,6 @@
  * tests/db/model/sample/upsert.js
  */
 'use strict';
-
 const chai = require('chai');
 const chaiAsPromised = require('chai-as-promised');
 chai.use(chaiAsPromised);
@@ -21,86 +20,194 @@ const Sample = tu.db.Sample;
 const Aspect = tu.db.Aspect;
 const Subject = tu.db.Subject;
 
-describe('db: sample: upsert: ', () => {
+describe('tests/db/model/sample/upsert.js >', () => {
+  const aspectName = `${tu.namePrefix}Aspect`;
+  const subjectName = `${tu.namePrefix}Subject`;
+  const unPublishedSubjectName = `${tu.namePrefix}UnPublishedSubject`;
+  const unPublishedAspectName = `${tu.namePrefix}UnPublishedAspect`;
+  let publishedAspectId;
+  let unPublishedAspectId;
+  let publishedSubjectId;
+  let unPublishedSubjectId;
+
   afterEach(u.forceDelete);
 
   beforeEach((done) => {
     Aspect.create({
       isPublished: true,
-      name: `${tu.namePrefix}Aspect`,
+      name: aspectName,
       timeout: '30s',
       valueType: 'NUMERIC',
     })
-    .then(() => Subject.create({
-      isPublished: true,
-      name: `${tu.namePrefix}Subject`,
-    }))
-    .then(() => done())
-    .catch((err) => done(err));
+    .then((a) => {
+      publishedAspectId = a.id;
+      return Subject.create({
+        isPublished: true,
+        name: subjectName,
+      });
+    })
+    .then((s) => {
+      publishedSubjectId = s.id;
+      return Subject.create({
+        isPublished: false,
+        name: unPublishedSubjectName,
+      });
+    })
+    .then((s) => {
+      unPublishedSubjectId = s.id;
+      return Aspect.create({
+        isPublished: false,
+        name: unPublishedAspectName,
+        timeout: '30s',
+        valueType: 'NUMERIC',
+      });
+    })
+    .then((a) => {
+      unPublishedAspectId = a.id;
+      done();
+    })
+    .catch(done);
+  });
+
+  describe('unpublished tests:', () => {
+    it('unpublished subject cannot be used to CREATE sample', (done) => {
+      Subject.findById(publishedSubjectId)
+      .then((s) => s.update({ isPublished: false }))
+      .then(() => Sample.upsertByName({
+        name: subjectName + `|` + aspectName,
+        value: '1',
+      }))
+      .then(() => done('expecting to throw ResourceNotFoundError'))
+      .catch((err) => {
+        expect(err).to.have.property('name').to.equal('ResourceNotFoundError');
+        expect(err.name).to.equal('ResourceNotFoundError');
+        expect(err.resourceType).to.equal('Subject');
+        expect(err.resourceKey).to.equal(publishedSubjectId);
+        done();
+      });
+    });
+
+    it('when referenced subject is unpublished, CREATE sample should fail',
+      (done) => {
+      Sample.create({
+        subjectId: unPublishedSubjectId,
+        aspectId: publishedAspectId,
+      })
+      .then(() => done('expecting to throw ResourceNotFoundError'))
+      .catch((err) => {
+        expect(err).to.have.property('name').to.equal('ResourceNotFoundError');
+        expect(err.name).to.equal('ResourceNotFoundError');
+        expect(err.resourceType).to.equal('Subject');
+        expect(err.resourceKey).to.equal(unPublishedSubjectId);
+        done();
+      });
+    });
+
+    it('when referenced aspect is unpublished, CREATE sample should fail',
+      (done) => {
+      Sample.create({
+        subjectId: publishedSubjectId,
+        aspectId: unPublishedAspectId,
+      })
+      .then(() => done('expecting to throw ResourceNotFoundError'))
+      .catch((err) => {
+        expect(err.name).to.equal('ResourceNotFoundError');
+        expect(err.resourceType).to.equal('Aspect');
+        expect(err.resourceKey).to.equal(unPublishedAspectId);
+        done();
+      });
+    });
+
+    it('when referenced aspect is unpublished, UPSERT sample should fail',
+      (done) => {
+      Sample.upsertByName({
+        name: subjectName + `|` + unPublishedAspectName,
+        value: '1',
+      })
+      .then(() => done('expecting to throw ResourceNotFoundError'))
+      .catch((err) => {
+        expect(err).to.have.property('name').to.equal('ResourceNotFoundError');
+        done();
+      });
+    });
+
+    it('when referenced subject is unpublished, UPSERT sample should fail',
+      (done) => {
+      Sample.upsertByName({
+        name: unPublishedSubjectName + `|` + aspectName,
+        value: '1',
+      })
+      .then(() => done('expecting to throw ResourceNotFoundError'))
+      .catch((err) => {
+        expect(err).to.have.property('name').to.equal('ResourceNotFoundError');
+        done();
+      });
+    });
   });
 
   it('when sample is new and when it already exists', (done) => {
     Sample.upsertByName({
-      name: `${tu.namePrefix}Subject|${tu.namePrefix}Aspect`,
+      name: subjectName + `|` + aspectName,
       value: '1',
     })
     .should.eventually.have.deep.property('value', '1')
     .then(() => Sample.upsertByName({
-      name: `${tu.namePrefix}Subject|${tu.namePrefix}Aspect`,
+      name: subjectName + `|` + aspectName,
       value: '2',
     }))
     .should.eventually.have.deep.property('value', '2')
     .then(() => done())
-    .catch((err) => done(err));
+    .catch(done);
   });
 
-  it('When subject name changed then sample name should be changed',
+  it('When subject name changed then the related samples should be deleted',
   (done) => {
+    const updatedSubjectName = subjectName + 1;
     let newSample;
     Sample.upsertByName({
-      name: `${tu.namePrefix}Subject|${tu.namePrefix}Aspect`,
+      name: subjectName + `|` + aspectName,
       value: '1',
     })
     .then((samp) => {
       newSample = samp;
     })
-    .then(() => {
-      return Subject.scope({ method: ['absolutePath',
-        `${tu.namePrefix}Subject`] }).find();
-    })
-    .then((subject) => {
-      return subject.update({
-        name: `${tu.namePrefix}Subject1`,
-      });
-    })
+    .then(() => Subject.scope({
+      method: ['absolutePath', subjectName],
+    }).find())
+    .then((subject) => subject.update({ name: updatedSubjectName }))
     .then(() => {
       // use delay for getting updated version of sample because it
       // gets updated in afterUpdate. So we receive the change in subject
       // as soon as it gets updated but sample update / heirarchy update
       // it does in background.
       setTimeout(() => {
-        Sample.findById(newSample.dataValues.id)
+        Sample.findOne({
+          where: {
+            name: {
+              $iLike: updatedSubjectName + '|' + aspectName,
+            },
+          },
+        })
         .then((sample) => {
-          expect(sample.dataValues.name).to.contain(
-            `${tu.namePrefix}Subject1|${tu.namePrefix}Aspect`);
+          expect(sample).to.equal(null);
           done();
         });
       }, 500);
     })
-    .catch((err) => done(err));
+    .catch(done);
   });
 
   it('updateAt timestamp should change', (done) => {
     let newSample;
     Sample.upsertByName({
-      name: `${tu.namePrefix}Subject|${tu.namePrefix}Aspect`,
+      name: subjectName + '|' + aspectName,
       value: '1',
     })
     .then((samp) => {
       newSample = samp;
     })
     .then(() => Sample.upsertByName({
-      name: `${tu.namePrefix}Subject|${tu.namePrefix}Aspect`,
+      name: subjectName + '|' + aspectName,
       value: '1',
     }))
     .then((s) => {
@@ -109,12 +216,12 @@ describe('db: sample: upsert: ', () => {
       expect(updatedSampleUpdateTime).to.be.above(newSampleUpdateTime);
     })
     .then(() => done())
-    .catch((err) => done(err));
+    .catch(done);
   });
 
   it('subject does not exist', (done) => {
     Sample.upsertByName({
-      name: `${tu.namePrefix}Subject|x`,
+      name: subjectName + '|x',
       value: '1',
     })
     .then(() => done('expecting to throw ResourceNotFoundError'))
@@ -126,7 +233,7 @@ describe('db: sample: upsert: ', () => {
 
   it('aspect does not exist', (done) => {
     Sample.upsertByName({
-      name: `x|${tu.namePrefix}Aspect`,
+      name: 'x|' + aspectName,
       value: '1',
     })
     .then(() => done('expecting to throw ResourceNotFoundError'))

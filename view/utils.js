@@ -11,7 +11,18 @@
  */
 'use strict'; // eslint-disable-line strict
 
+import request from 'superagent';
 const constants = require('./constants');
+const filters = ['aspectFilter',
+                  'subjectTagFilter',
+                  'aspectTagFilter',
+                  'statusFilter',
+                ];
+const REQ_HEADERS = {
+  'X-Requested-With': 'XMLHttpRequest',
+  Expires: '-1',
+  'Cache-Control': 'no-cache,no-store,must-revalidate,max-age=-1,private',
+};
 
 /**
  * [Sets Cookie]
@@ -60,40 +71,53 @@ function getNamespaceString(inst) {
   if (inst.rootSubject) {
     namespace += inst.rootSubject;
   }
-  if (inst.aspectFilter) {
-    namespace += constants.filterSeperator + inst.aspectFilterType +
+
+  for (let i = 0; i < filters.length; i++) {
+    if (inst[filters[i]] && inst[filters[i]].length) {
+      namespace += constants.filterSeperator + inst[filters[i] + 'Type'] +
                 constants.fieldTypeFieldSeparator +
-                inst.aspectFilter.join(constants.valuesSeparator);
-  } else {
-    namespace += constants.filterSeperator + inst.aspectFilterType;
-  }
-  if (inst.subjectTagFilter) {
-    namespace += constants.filterSeperator + inst.subjectTagFilterType +
-                constants.fieldTypeFieldSeparator +
-                inst.subjectTagFilter.join(constants.valuesSeparator);
-  } else {
-    namespace += constants.filterSeperator + inst.subjectTagFilterType;
-  }
-  if (inst.aspectTagFilter) {
-    namespace += constants.filterSeperator + inst.aspectTagFilterType +
-                constants.fieldTypeFieldSeparator +
-                inst.aspectTagFilter.join(constants.valuesSeparator);
-  } else {
-    namespace += constants.filterSeperator + inst.aspectTagFilterType;
-  }
-  if (inst.statusFilter) {
-    namespace += constants.filterSeperator + inst.statusFilterType +
-                constants.fieldTypeFieldSeparator +
-                inst.statusFilter.join(constants.valuesSeparator);
-  } else {
-    namespace += constants.filterSeperator + inst.statusFilterType;
+                inst[filters[i]].join(constants.valuesSeparator);
+    } else {
+      namespace += constants.filterSeperator + inst[filters[i] + 'Type'];
+    }
   }
 
   return namespace;
 }
 
+/**
+ * Remove spinner from DOM
+ *
+ * @param  {String} spinnerID - Id of spinner
+ */
+function removeSpinner(spinnerID) {
+  const spinner = document.getElementById(spinnerID);
+  spinner.parentNode.removeChild(spinner);
+}
+
+/**
+ * @param {String} url The url to get from
+ * @returns {Promise} For use in chaining.
+ */
+function getPromiseWithUrl(url) {
+  return new Promise((resolve, reject) => {
+    request.get(url)
+    .set(REQ_HEADERS)
+    .end((error, response) => {
+      // reject if error is present, otherwise resolve request
+      if (error) {
+        reject(error);
+      } else {
+        resolve(response);
+      }
+    });
+  });
+} // getPromiseWithUrl
+
 module.exports = {
   setCookie,
   getCookie,
   getNamespaceString,
+  removeSpinner,
+  getPromiseWithUrl,
 };

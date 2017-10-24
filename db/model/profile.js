@@ -32,6 +32,26 @@ module.exports = function profile(seq, dataTypes) {
     },
     aspectAccess: {
       type: dataTypes.ENUM('r', 'rw'),
+      defaultValue: 'rw',
+    },
+    botAccess: {
+      type: dataTypes.ENUM('r', 'rw'),
+      defaultValue: 'rw',
+    },
+    collectorAccess: {
+      type: dataTypes.ENUM('r', 'rw'),
+      defaultValue: 'r',
+    },
+    eventAccess: {
+      type: dataTypes.ENUM('r', 'rw'),
+      defaultValue: 'rw',
+    },
+    generatorAccess: {
+      type: dataTypes.ENUM('r', 'rw'),
+      defaultValue: 'r',
+    },
+    generatorTemplateAccess: {
+      type: dataTypes.ENUM('r', 'rw'),
       defaultValue: 'r',
     },
     isDeleted: {
@@ -41,27 +61,35 @@ module.exports = function profile(seq, dataTypes) {
     },
     lensAccess: {
       type: dataTypes.ENUM('r', 'rw'),
-      defaultValue: 'r',
+      defaultValue: 'rw',
     },
     perspectiveAccess: {
       type: dataTypes.ENUM('r', 'rw'),
-      defaultValue: 'r',
+      defaultValue: 'rw',
     },
     profileAccess: {
       type: dataTypes.ENUM('r', 'rw'),
       defaultValue: 'r',
     },
+    roomAccess: {
+      type: dataTypes.ENUM('r', 'rw'),
+      defaultValue: 'rw',
+    },
+    roomTypeAccess: {
+      type: dataTypes.ENUM('r', 'rw'),
+      defaultValue: 'rw',
+    },
     sampleAccess: {
       type: dataTypes.ENUM('r', 'rw'),
-      defaultValue: 'r',
+      defaultValue: 'rw',
     },
     subjectAccess: {
       type: dataTypes.ENUM('r', 'rw'),
-      defaultValue: 'r',
+      defaultValue: 'rw',
     },
     userAccess: {
       type: dataTypes.ENUM('r', 'rw'),
-      defaultValue: 'r',
+      defaultValue: 'rw',
     },
     userCount: {
       type: dataTypes.INTEGER,
@@ -72,6 +100,10 @@ module.exports = function profile(seq, dataTypes) {
     classMethods: {
       getProfileAssociations() {
         return assoc;
+      },
+
+      getProfileAccessField() {
+        return 'profileAccess';
       },
 
       postImport(models) {
@@ -108,6 +140,16 @@ module.exports = function profile(seq, dataTypes) {
           .catch((err) => reject(err));
         });
       }, // isAdmin
+
+      hasWriteAccess(profileId, model) {
+        const accessModel = model.getAccessField();
+        return new Promise((resolve, reject) => {
+          Profile.findById(profileId)
+          .then((p) => resolve(p &&
+            p[accessModel] === 'rw'.toLowerCase()))
+          .catch(reject);
+        });
+      }, // hasWriteAccess
     },
     defaultScope: {
       order: ['Profile.name'],

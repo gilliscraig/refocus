@@ -40,44 +40,52 @@ module.exports = function perspective(seq, dataTypes) {
     },
     aspectFilterType: {
       type: dataTypes.ENUM('INCLUDE', 'EXCLUDE'),
-      defaultValue: 'INCLUDE',
+      defaultValue: 'EXCLUDE',
       allowNull: false,
     },
     aspectFilter: {
       type: dataTypes.ARRAY(dataTypes.STRING(constants.fieldlen.normalName)),
+      defaultValue: constants.defaultArrayValue,
       allowNull: true,
     },
     aspectTagFilterType: {
       type: dataTypes.ENUM('INCLUDE', 'EXCLUDE'),
-      defaultValue: 'INCLUDE',
+      defaultValue: 'EXCLUDE',
       allowNull: false,
     },
     aspectTagFilter: {
       type: dataTypes.ARRAY(dataTypes.STRING(constants.fieldlen.normalName)),
+      defaultValue: constants.defaultArrayValue,
       allowNull: true,
     },
     subjectTagFilterType: {
       type: dataTypes.ENUM('INCLUDE', 'EXCLUDE'),
-      defaultValue: 'INCLUDE',
+      defaultValue: 'EXCLUDE',
       allowNull: false,
     },
     subjectTagFilter: {
       type: dataTypes.ARRAY(dataTypes.STRING(constants.fieldlen.normalName)),
+      defaultValue: constants.defaultArrayValue,
       allowNull: true,
     },
     statusFilterType: {
       type: dataTypes.ENUM('INCLUDE', 'EXCLUDE'),
-      defaultValue: 'INCLUDE',
+      defaultValue: 'EXCLUDE',
       allowNull: false,
     },
     statusFilter: {
       type: dataTypes.ARRAY(dataTypes.STRING),
+      defaultValue: constants.defaultArrayValue,
       allowNull: true,
     },
   }, {
     classMethods: {
       getPerspectiveAssociations() {
         return assoc;
+      },
+
+      getProfileAccessField() {
+        return 'perspectiveAccess';
       },
 
       postImport(models) {
@@ -90,6 +98,11 @@ module.exports = function perspective(seq, dataTypes) {
             name: 'lensId',
             allowNull: false,
           },
+        });
+        assoc.writers = Perspective.belongsToMany(models.User, {
+          as: 'writers',
+          through: 'PerspectiveWriters',
+          foreignKey: 'perspectiveId',
         });
         Perspective.addScope('defaultScope', {
           include: [
@@ -110,6 +123,11 @@ module.exports = function perspective(seq, dataTypes) {
           order: ['Perspective.name'],
         }, {
           override: true,
+        });
+
+        Perspective.addScope('withoutLensAssociation', {
+          include: [],
+          order: ['Perspective.name'],
         });
       },
     },
@@ -161,6 +179,21 @@ module.exports = function perspective(seq, dataTypes) {
         ],
       },
     ],
+    instanceMethods: {
+      isWritableBy(who) {
+        return new seq.Promise((resolve /* , reject */) =>
+          this.getWriters()
+          .then((writers) => {
+            if (!writers.length) {
+              resolve(true);
+            }
+
+            const found = writers.filter((w) =>
+              w.name === who || w.id === who);
+            resolve(found.length === 1);
+          }));
+      }, // isWritableBy
+    },
     paranoid: true,
     validate: {
       lensIdNotNull() {
